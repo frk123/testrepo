@@ -1,0 +1,1 @@
+puts 'test 1 merge check file'
