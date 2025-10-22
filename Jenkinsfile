@@ -236,7 +236,7 @@ You may proceed with the merge.
                     } else if (env.TIME_CHECK_PASSED == 'true') {
                         def successMessage = """
 ========================================
-✅ PRE-PROD MERGE CHECK PASSED
+✅ PRE-PROD MERGE CHECK PASSED CHECK
 ========================================
 
 Status: APPROVED ✓
