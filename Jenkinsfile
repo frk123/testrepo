@@ -29,7 +29,7 @@ pipeline {
                     ''', returnStdout: true).trim() as Integer
                     
                     def startTime = 800  // 8:00 AM
-                    def endTime = 1800   // 6:00 PM
+                    def endTime = 1835   // 6:00 PM
                     
                     echo "Current time (IST): ${currentTimeIST}"
                     
