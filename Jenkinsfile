@@ -45,11 +45,10 @@ pipeline {
                         echo "3. Contact an administrator with force push access for assistance"
                         
                         currentBuild.description = "❌ MERGE BLOCKED: Outside permitted time window"
-                        
-                        // Post comment to PR if available
+
+                        // Create PR comment if applicable
                         if (env.CHANGE_ID) {
                             def comment = """## ❌ Merge to pre_prod branch blocked
-                            
 **Reason**: Attempted merge outside permitted time window (8:00 AM - 6:00 PM IST)
 
 **Current time (IST)**: ${new Date().format('HH:mm', TimeZone.getTimeZone('Asia/Kolkata'))}
@@ -61,7 +60,18 @@ pipeline {
 
 *This is an automated message from the branch protection system.*
 """
-                            pullRequest.comment(comment)
+                            // Try to comment using GitHub CLI
+                            try {
+                                sh """
+                                    if command -v gh >/dev/null 2>&1; then
+                                        gh pr comment ${env.CHANGE_ID} --body "${comment.replace('"', '\\"')}"
+                                    else
+                                        echo "⚠️ GitHub CLI not installed. Skipping PR comment."
+                                    fi
+                                """
+                            } catch (err) {
+                                echo "⚠️ Failed to post PR comment: ${err}"
+                            }
                         }
                         
                         error "Merge rejected: Outside of permitted merge window (8:00 AM - 6:00 PM IST)"
@@ -75,12 +85,23 @@ pipeline {
         success {
             script {
                 if (env.CHANGE_ID) {
-                    pullRequest.comment("""## ✅ pre_prod Branch Protection Check Passed
+                    def message = """## ✅ pre_prod Branch Protection Check Passed
                     
 This pull request has been approved for merging to the pre_prod branch.
 
 *This is an automated message from the branch protection system.*
-""")
+"""
+                    try {
+                        sh """
+                            if command -v gh >/dev/null 2>&1; then
+                                gh pr comment ${env.CHANGE_ID} --body "${message.replace('"', '\\"')}"
+                            else
+                                echo "⚠️ GitHub CLI not installed. Skipping PR comment."
+                            fi
+                        """
+                    } catch (err) {
+                        echo "⚠️ Failed to post success comment: ${err}"
+                    }
                 }
             }
         }
