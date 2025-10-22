@@ -1,257 +1,70 @@
 pipeline {
     agent any
     
-    parameters {
-        choice(
-            name: 'TARGET_BRANCH', 
-            choices: ['pre_prod', 'main', 'develop'], 
-            description: 'Target branch to merge into'
-        )
-        string(
-            name: 'SOURCE_BRANCH', 
-            defaultValue: 'feature/test-branch', 
-            description: 'Source branch name'
-        )
-        string(
-            name: 'PR_NUMBER', 
-            defaultValue: '123', 
-            description: 'Pull Request number'
-        )
-        booleanParam(
-            name: 'SIMULATE_OFF_HOURS',
-            defaultValue: false,
-            description: 'Simulate merge attempt outside 8 AM - 6 PM IST'
-        )
-    }
-    
     options {
+        // Keep the build fast
         timeout(time: 2, unit: 'MINUTES')
-        timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '30'))
-    }
-    
-    environment {
-        SOURCE_BRANCH = "${params.SOURCE_BRANCH}"
-        TARGET_BRANCH = "${params.TARGET_BRANCH}"
-        PR_ID = "${params.PR_NUMBER}"
-        PR_AUTHOR = "test-user"
     }
     
     stages {
-        stage('Initialize') {
+        stage('Check Merge Time Restrictions') {
             steps {
                 script {
-                    echo "=========================================="
-                    echo "Pre-Prod Branch Protection Check"
-                    echo "=========================================="
-                    echo "Source Branch: ${SOURCE_BRANCH}"
-                    echo "Target Branch: ${TARGET_BRANCH}"
-                    echo "PR ID: ${PR_ID}"
-                    echo "PR Author: ${PR_AUTHOR}"
-                    echo "Simulate Off Hours: ${params.SIMULATE_OFF_HOURS}"
-                    echo "=========================================="
-                }
-            }
-        }
-        
-        stage('Verify Target Branch') {
-            steps {
-                script {
-                    if (TARGET_BRANCH != 'pre_prod') {
-                        echo "✅ Not targeting pre_prod branch. Check passed."
-                        currentBuild.result = 'SUCCESS'
-                        currentBuild.description = "Not targeting pre_prod - check skipped"
-                        env.SKIP_REMAINING = 'true'
-                    } else {
-                        env.SKIP_REMAINING = 'false'
-                    }
-                }
-            }
-        }
-        
-        stage('Check Branch Exceptions') {
-            when {
-                expression { env.SKIP_REMAINING != 'true' }
-            }
-            steps {
-                script {
-                    def sourceBranchLower = SOURCE_BRANCH.toLowerCase()
+                    // Get branch name
+                    def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceFirst('origin/', '')
+                    echo "Checking branch: ${branchName}"
                     
-                    echo "Checking branch: ${sourceBranchLower}"
+                    // Check if this is an exception branch (master or contains 'revert')
+                    def isExceptionBranch = branchName == 'master' || branchName.toLowerCase().contains('revert')
                     
-                    // Exception 1: Master branch
-                    if (sourceBranchLower == 'master' || sourceBranchLower == 'main' || sourceBranchLower == 'origin/master' || sourceBranchLower == 'origin/main') {
-                        echo "✅ EXCEPTION: Master/Main branch can merge anytime"
-                        currentBuild.result = 'SUCCESS'
-                        currentBuild.description = "Master branch exception - approved"
-                        env.EXCEPTION_GRANTED = 'true'
-                        env.EXCEPTION_REASON = 'Master/Main branch exception'
-                        env.SKIP_TIME_CHECK = 'true'
+                    if (isExceptionBranch) {
+                        echo "🟢 ALLOWED: Branch '${branchName}' is exempt from time restrictions"
+                        currentBuild.description = "✅ MERGE ALLOWED: Exception branch detected"
                         return
                     }
                     
-                    // Exception 2: Branch name contains 'revert'
-                    if (sourceBranchLower.contains('revert')) {
-                        echo "✅ EXCEPTION: Revert branch can merge anytime"
-                        currentBuild.result = 'SUCCESS'
-                        currentBuild.description = "Revert branch exception - approved"
-                        env.EXCEPTION_GRANTED = 'true'
-                        env.EXCEPTION_REASON = 'Revert branch exception'
-                        env.SKIP_TIME_CHECK = 'true'
-                        return
-                    }
-                    
-                    echo "No exceptions apply. Proceeding to time window check..."
-                    env.EXCEPTION_GRANTED = 'false'
-                    env.SKIP_TIME_CHECK = 'false'
-                }
-            }
-        }
-        
-        stage('Check Merge Time Window') {
-            when {
-                expression { 
-                    env.SKIP_REMAINING != 'true' && env.SKIP_TIME_CHECK != 'true'
-                }
-            }
-            steps {
-                script {
                     // Get current time in IST
-                    def istTime = sh(
-                        script: 'TZ="Asia/Kolkata" date +"%Y-%m-%d %H:%M:%S %Z"',
-                        returnStdout: true
-                    ).trim()
+                    def currentTimeIST = sh(script: '''
+                        TZ="Asia/Kolkata" date +"%H%M"
+                    ''', returnStdout: true).trim() as Integer
                     
-                    def currentHour = sh(
-                        script: 'TZ="Asia/Kolkata" date +"%H"',
-                        returnStdout: true
-                    ).trim().toInteger()
+                    def startTime = 800  // 8:00 AM
+                    def endTime = 1800   // 6:00 PM
                     
-                    def currentMinute = sh(
-                        script: 'TZ="Asia/Kolkata" date +"%M"',
-                        returnStdout: true
-                    ).trim()
+                    echo "Current time (IST): ${currentTimeIST}"
                     
-                    def currentDay = sh(
-                        script: 'TZ="Asia/Kolkata" date +"%A"',
-                        returnStdout: true
-                    ).trim()
-                    
-                    echo "=========================================="
-                    echo "TIME CHECK"
-                    echo "=========================================="
-                    echo "Current IST Time: ${istTime}"
-                    echo "Current Hour: ${currentHour}"
-                    echo "Current Minute: ${currentMinute}"
-                    echo "Current Day: ${currentDay}"
-                    echo "Allowed Window: 08:00 - 18:00 IST"
-                    echo "=========================================="
-                    
-                    // Simulate off-hours if parameter is set
-                    def hourToCheck = currentHour
-                    if (params.SIMULATE_OFF_HOURS) {
-                        hourToCheck = 19  // 7 PM - outside window
-                        echo "⚠️  SIMULATION MODE: Pretending current hour is ${hourToCheck}:00"
-                    }
-                    
-                    // Check if within allowed merge window (8 AM to 6 PM IST)
-                    if (hourToCheck >= 8 && hourToCheck < 18) {
-                        echo "✅ APPROVED: Current time (${hourToCheck}:00 IST) is within merge window (08:00 - 18:00 IST)"
-                        currentBuild.result = 'SUCCESS'
-                        currentBuild.description = "Merge approved - within time window (${hourToCheck}:00 IST)"
-                        env.TIME_CHECK_PASSED = 'true'
+                    if (currentTimeIST >= startTime && currentTimeIST < endTime) {
+                        echo "🟢 ALLOWED: Current time is within the allowed merge window (8:00 AM - 6:00 PM IST)"
+                        currentBuild.description = "✅ MERGE ALLOWED: Within permitted time window"
                     } else {
-                        def message = """
-========================================
-❌ MERGE BLOCKED - Outside Time Window
-========================================
-
-Current Time: ${istTime}
-Current Hour: ${hourToCheck}:00 IST
-Allowed Window: 08:00 AM - 06:00 PM IST
-Status: BLOCKED ⛔
-
-Your merge to 'pre_prod' is blocked because it's outside the allowed time window.
-
-NEXT STEPS:
------------
-1. ⏰ Wait until 08:00 AM IST to merge
-2. If urgent, consider these options:
-   • Merge from 'master' or 'main' branch (allowed anytime)
-   • Create a branch with 'revert' in the name (allowed anytime)
-   • Contact someone with force-push access
-3. Re-run this check during allowed hours (8 AM - 6 PM IST)
-
-EXCEPTIONS (Allowed Anytime):
------------------------------
-✓ Merges from 'master' or 'main' branch
-✓ Branches containing 'revert' in the name
-✓ Users with force-push permissions
-
-Branch Details:
---------------
-Source: ${SOURCE_BRANCH}
-Target: ${TARGET_BRANCH}
-PR: #${PR_ID}
-
-For questions, contact your DevOps team.
-========================================
-"""
-                        echo message
+                        echo "❌ BLOCKED: Current time is outside the allowed merge window"
+                        echo "Allowed merge window is 8:00 AM - 6:00 PM IST"
+                        echo "You can:"
+                        echo "1. Wait until the next merge window opens"
+                        echo "2. If urgent, rename your branch to include 'revert'"
+                        echo "3. Contact an administrator with force push access for assistance"
                         
-                        currentBuild.result = 'FAILURE'
-                        currentBuild.description = "❌ Blocked - outside merge window (${hourToCheck}:00 IST)"
-                        env.TIME_CHECK_PASSED = 'false'
-                        error("Merge blocked: Outside allowed time window (${hourToCheck}:00 IST)")
-                    }
-                }
-            }
-        }
-        
-        stage('Final Status') {
-            when {
-                expression { env.SKIP_REMAINING != 'true' }
-            }
-            steps {
-                script {
-                    if (env.EXCEPTION_GRANTED == 'true') {
-                        def successMessage = """
-========================================
-✅ PRE-PROD MERGE CHECK PASSED
-========================================
+                        currentBuild.description = "❌ MERGE BLOCKED: Outside permitted time window"
+                        
+                        // Post comment to PR if available
+                        if (env.CHANGE_ID) {
+                            def comment = """## ❌ Merge to pre_prod branch blocked
+                            
+**Reason**: Attempted merge outside permitted time window (8:00 AM - 6:00 PM IST)
 
-Status: APPROVED ✓
-Reason: ${env.EXCEPTION_REASON}
+**Current time (IST)**: ${new Date().format('HH:mm', TimeZone.getTimeZone('Asia/Kolkata'))}
 
-Branch Details:
---------------
-Source: ${SOURCE_BRANCH}
-Target: ${TARGET_BRANCH}
-PR: #${PR_ID}
+### Options:
+1. Wait until the merge window opens at 8:00 AM IST tomorrow
+2. For urgent changes, create a new branch with 'revert' in the name
+3. Contact an administrator with force push access for assistance
 
-You may proceed with the merge.
-========================================
+*This is an automated message from the branch protection system.*
 """
-                        echo successMessage
-                    } else if (env.TIME_CHECK_PASSED == 'true') {
-                        def successMessage = """
-========================================
-✅ PRE-PROD MERGE CHECK PASSED CHECK
-========================================
-
-Status: APPROVED ✓
-Reason: Within allowed time window (08:00-18:00 IST)
-
-Branch Details:
---------------
-Source: ${SOURCE_BRANCH}
-Target: ${TARGET_BRANCH}
-PR: #${PR_ID}
-
-You may proceed with the merge.
-========================================
-"""
-                        echo successMessage
+                            pullRequest.comment(comment)
+                        }
+                        
+                        error "Merge rejected: Outside of permitted merge window (8:00 AM - 6:00 PM IST)"
                     }
                 }
             }
@@ -259,21 +72,20 @@ You may proceed with the merge.
     }
     
     post {
-        always {
+        success {
             script {
-                echo "=========================================="
-                echo "BUILD COMPLETE"
-                echo "=========================================="
-                echo "Build Result: ${currentBuild.result}"
-                echo "Build Number: ${BUILD_NUMBER}"
-                echo "=========================================="
+                if (env.CHANGE_ID) {
+                    pullRequest.comment("""## ✅ pre_prod Branch Protection Check Passed
+                    
+This pull request has been approved for merging to the pre_prod branch.
+
+*This is an automated message from the branch protection system.*
+""")
+                }
             }
         }
-        success {
-            echo "✅ Pre-prod branch protection check PASSED"
-        }
         failure {
-            echo "❌ Pre-prod branch protection check FAILED"
+            echo "Check failed. See above messages for details."
         }
     }
 }
